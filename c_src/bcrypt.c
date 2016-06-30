@@ -139,6 +139,17 @@ encode_salt(char *salt, u_int8_t *csalt, u_int16_t clen, u_int8_t logr)
 	encode_base64((u_int8_t *) salt + 7, csalt, clen);
 }
 
+// Split into 3 functions
+// int bcrypt_init(blf_ctx*, const char *salt)
+//   - parse salt
+//   - call initstate
+//   - and expandstate once
+// int bcrypt_compute(blf_ctx*, key, salt)
+//   - call expand0state 16 times
+// int bcrypt_finish(blf_ctx*)
+//   - call Blowfish stream2word
+//   - call blf_enc
+
 /* We handle $Vers$log2(NumRounds)$salt+passwd$
    i.e. $2$04$iwouldntknowwhattosayetKdJ6iFtacBqJdKe6aW7ou */
 

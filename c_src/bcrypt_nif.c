@@ -76,12 +76,42 @@ static ERL_NIF_TERM bcrypt_hashpw(ErlNifEnv* env, int argc, const ERL_NIF_TERM a
         return enif_make_badarg(env);
     }
 
+    // Init state
+    // check salt $2a$, etc
+    //   - create a raw salt
+    // parse round
+    // deallocate binaries if salt is bad
+
     result = hashpw(env, pass, salt);
 
     enif_release_binary(&pass);
     enif_release_binary(&salt);
 
     return result;
+}
+
+// This will be scheduled by bcrypt_hashpw
+static ERL_NIF_TERM inner_hashpw(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[])
+{
+    // This function will use blowfish context and partial results of
+    // bcrypt hash function.
+    // 1. blowfish context as a binary
+    //    - todo: convert blf_ctx from/to a binary 
+    // 2. salt as a binary (not base64 decoded)
+    //    - convert to char *
+    // 3. key as binary
+    //    - convert to char *
+    // 4. number of rounds we have left (int)
+}
+
+static ErlNifBinary ctx2bin(ErlNifEnv *env, blf_ctx* ctx)
+{
+    // todo: convert context to binary
+}
+
+static blf_ctx* bin2ctx(ErlNifEnv *env, ErlNifBinary* bin)
+{
+    // todo: convert binary to blf context
 }
 
 static ERL_NIF_TERM hashpw(ErlNifEnv *env, ErlNifBinary bpass, ErlNifBinary bsalt)
