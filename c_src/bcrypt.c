@@ -59,7 +59,6 @@
  */
 
 #define BCRYPT_VERSION '2'
-#define BCRYPT_MAXSALT 16	/* Precomputation is just so nice */
 #define BCRYPT_BLOCKS 6		/* Ciphertext blocks */
 #define BCRYPT_MINROUNDS 16	/* we have log2(rounds) in salt */
 
@@ -137,6 +136,134 @@ encode_salt(char *salt, u_int8_t *csalt, u_int16_t clen, u_int8_t logr)
 	snprintf(salt + 4, 4, "%2.2u$", logr);
 
 	encode_base64((u_int8_t *) salt + 7, csalt, clen);
+}
+
+int
+bcrypt_init(bcrypt_param *bp)
+{
+    int         n;
+    u_int8_t    *salt;
+
+    salt = bp->salt;
+
+	/* Discard "$" identifier */
+    salt++;
+
+	if (*salt > BCRYPT_VERSION) {
+		/* How do I handle errors ? Return ':' */
+		return ERROR;
+	}
+
+	/* Check for minor versions */
+	if (salt[1] != '$') {
+		 switch (salt[1]) {
+		 case 'a':
+			 /* 'ab' should not yield the same as 'abab' */
+			 bp->minor = salt[1];
+			 salt++;
+			 break;
+		 default:
+			 return ERROR;
+		 }
+	} else
+		 bp->minor = 0;
+
+	/* Discard version + "$" identifier */
+	salt += 2;
+
+	if (salt[2] != '$')
+		/* Out of sync with passwd entry */
+		return ERROR;
+
+	/* Computer power doesn't increase linear, 2^x should be fine */
+	n = atoi((char *)salt);
+	if (n > 31 || n < 0)
+		return ERROR;
+	bp->logr = (u_int8_t)n;
+	if ((bp->rounds = (u_int32_t) 1 << bp->logr) < BCRYPT_MINROUNDS)
+		return ERROR;
+
+	/* Discard num rounds + "$" identifier */
+	salt += 3;
+
+	if (strlen((char *)salt) * 3 / 4 < BCRYPT_MAXSALT)
+		return ERROR;
+
+	/* We dont want the base64 salt but the raw data */
+	decode_base64(bp->csalt, BCRYPT_MAXSALT, (u_int8_t *) salt);
+	bp->salt_len = BCRYPT_MAXSALT;
+	bp->key_len = strlen((char *)bp->key) + (bp->minor >= 'a' ? 1 : 0);
+
+	/* Setting up S-Boxes and Subkeys */
+	Blowfish_initstate(&(bp->state));
+	Blowfish_expandstate(&(bp->state), bp->csalt, bp->salt_len, bp->key, bp->key_len);
+
+    return 0;
+}
+
+#define BCRYPT_STEPS    64
+
+void
+bcrypt_compute(bcrypt_param *bp)
+{
+    int     k;
+
+    /* Compute 64 rounds and store the result */
+	for (k = 0; k < BCRYPT_STEPS; k++) {
+		Blowfish_expand0state(&(bp->state), bp->key, bp->key_len);
+		Blowfish_expand0state(&(bp->state), bp->csalt, bp->salt_len);
+	}
+
+    bp->steps += BCRYPT_STEPS;
+
+    return;
+}
+
+int
+bcrypt_encode(bcrypt_param *bp, char *encrypted)
+{
+	u_int8_t    ciphertext[4 * BCRYPT_BLOCKS] = "OrpheanBeholderScryDoubt";
+	u_int32_t   cdata[BCRYPT_BLOCKS];
+    u_int16_t   j;
+    int         i, k;
+
+	/* This can be precomputed later */
+	j = 0;
+	for (i = 0; i < BCRYPT_BLOCKS; i++)
+		cdata[i] = Blowfish_stream2word(ciphertext, 4 * BCRYPT_BLOCKS, &j);
+
+	/* Now do the encryption */
+	for (k = 0; k < 64; k++)
+		blf_enc(&(bp->state), cdata, BCRYPT_BLOCKS / 2);
+
+	for (i = 0; i < BCRYPT_BLOCKS; i++) {
+		ciphertext[4 * i + 3] = cdata[i] & 0xff;
+		cdata[i] = cdata[i] >> 8;
+		ciphertext[4 * i + 2] = cdata[i] & 0xff;
+		cdata[i] = cdata[i] >> 8;
+		ciphertext[4 * i + 1] = cdata[i] & 0xff;
+		cdata[i] = cdata[i] >> 8;
+		ciphertext[4 * i + 0] = cdata[i] & 0xff;
+	}
+
+	i = 0;
+	encrypted[i++] = '$';
+	encrypted[i++] = BCRYPT_VERSION;
+	if (bp->minor)
+		encrypted[i++] = bp->minor;
+	encrypted[i++] = '$';
+
+	snprintf(encrypted + i, 4, "%2.2u$", bp->logr);
+
+	encode_base64((u_int8_t *) encrypted + i + 3, bp->csalt, BCRYPT_MAXSALT);
+	encode_base64((u_int8_t *) encrypted + strlen(encrypted), ciphertext,
+	    4 * BCRYPT_BLOCKS - 1);
+
+	memset(ciphertext, 0, sizeof(ciphertext));
+	memset(bp, 0, sizeof(*bp));
+	memset(cdata, 0, sizeof(cdata));
+
+	return 0;
 }
 
 // Split into 3 functions
