@@ -24,9 +24,11 @@
 #include "erl_blf.h"
 #include "bcrypt_nif.h"
 
-static ERL_NIF_TERM hashpw(ErlNifEnv *env, ErlNifBinary bpass, ErlNifBinary bsalt);
+static ERL_NIF_TERM inner_hashpw(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[]);
+static ERL_NIF_TERM encode(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[]);
 
-static ERL_NIF_TERM bcrypt_encode_salt(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
+static ERL_NIF_TERM
+bcrypt_encode_salt(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 {
     ErlNifBinary csalt, bin;
     unsigned long log_rounds;
@@ -54,7 +56,8 @@ static ERL_NIF_TERM bcrypt_encode_salt(ErlNifEnv* env, int argc, const ERL_NIF_T
             enif_make_string(env, (char *)bin.data, ERL_NIF_LATIN1));
 }
 
-static ERL_NIF_TERM bcrypt_hashpw(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
+static ERL_NIF_TERM
+bcrypt_hashpw(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 {
     ErlNifBinary        pass, salt;
     ErlNifResourceType  *res_type;
@@ -78,84 +81,77 @@ static ERL_NIF_TERM bcrypt_hashpw(ErlNifEnv* env, int argc, const ERL_NIF_TERM a
     }
 
     /* Allocate bcrypt context as a resource */
+    res_type = (ErlNifResourceType *)enif_priv_data(env);
+
     bcrypt_param    *bp;
     bp = enif_alloc_resource(res_type, sizeof(bcrypt_param));
 
+    /* Copy password to bcrypt state */
     size_t password_sz = 1024;
     if (password_sz > pass.size)
         password_sz = pass.size;
 
     (void) memcpy(bp->key, pass.data, password_sz);
 
+    /* Copy salt to bcrypt state */
     size_t salt_sz = 1024;
     if (salt_sz > salt.size)
         salt_sz = salt.size;
 
     (void) memcpy(bp->salt, salt.data, salt_sz);
 
-    /* Init bcrypt state */
-    if (bcrypt_init(bp)) {
-        // deallocate
-        return -1;
-    }
-
-    /* Compute rounds but in 64 step-batches */
-    while (bp->steps < bp->rounds) {
-        bcrypt_compute(bp);
-    }
-
-    char encrypted[1024];
-
-    if (bcrypt_encode(bp, encrypted)) {
-        // deallocate
-        return enif_make_tuple2(
-            env,
-            enif_make_atom(env, "error"),
-            enif_make_string(env, "bcrypt failed", ERL_NIF_LATIN1));
-    }
-
-    result = enif_make_tuple2(
-        env,
-        enif_make_atom(env, "ok"),
-        enif_make_string(env, encrypted, ERL_NIF_LATIN1));
-
     enif_release_binary(&pass);
     enif_release_binary(&salt);
 
-    return result;
+    /* Init bcrypt state */
+    if (bcrypt_init(bp)) {
+        enif_release_resource(bp);
+
+        return -1;
+    }
+
+    /* Schedule inner_hashpw nif */
+    ERL_NIF_TERM newargv[1];
+    newargv[0] = enif_make_resource(env, bp);
+
+    enif_release_resource(bp);
+
+    return enif_schedule_nif(env, "inner_hashpw", 0, inner_hashpw, 1, newargv);
 }
 
-// This will be scheduled by bcrypt_hashpw
-static ERL_NIF_TERM inner_hashpw(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[])
+static ERL_NIF_TERM
+inner_hashpw(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[])
 {
-    // This function will use blowfish context and partial results of
-    // bcrypt hash function.
-    // 1. blowfish context as a binary
-    //    - todo: convert blf_ctx from/to a binary 
-    // 2. salt as a binary (not base64 decoded)
-    //    - convert to char *
-    // 3. key as binary
-    //    - convert to char *
-    // 4. number of rounds we have left (int)
+    ErlNifResourceType  *res_type = (ErlNifResourceType *)enif_priv_data(env);
+    bcrypt_param        *bp;
+
+    /* Process the parameters */
+    if (argc != 1 || !enif_get_resource(env, argv[0], res_type, &bp)) {
+        return enif_make_badarg(env);
+    }
+
+    bcrypt_compute(bp);
+
+    if (bp->steps < bp->rounds) {
+        return enif_schedule_nif(env, "inner_hashpw", 0, inner_hashpw, 1, argv);
+    } else {
+        return enif_schedule_nif(env, "encode", 0, encode, 1, argv);
+    }
 }
 
-static ERL_NIF_TERM hashpw(ErlNifEnv *env, ErlNifBinary bpass, ErlNifBinary bsalt)
+static ERL_NIF_TERM
+encode(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[])
 {
-    char password[1024] = { 0 };
-    char salt[1024] = { 0 };
-    char encrypted[1024] = { 0 };
+    ErlNifResourceType  *res_type = (ErlNifResourceType *)enif_priv_data(env);
+    bcrypt_param        *bp;
+    char                encrypted[1024];
 
-    size_t password_sz = 1024;
-    if (password_sz > bpass.size)
-        password_sz = bpass.size;
-    (void)memcpy(&password, bpass.data, password_sz);
+    /* Process the parameters */
+    if (argc != 1 || !enif_get_resource(env, argv[0], res_type, &bp)) {
+        return enif_make_badarg(env);
+    }
 
-    size_t salt_sz = 1024;
-    if (salt_sz > bsalt.size)
-        salt_sz = bsalt.size;
-    (void)memcpy(&salt, bsalt.data, salt_sz);
-
-    if (bcrypt(encrypted, password, salt)) {
+    if (bcrypt_encode(bp, encrypted)) {
         return enif_make_tuple2(
             env,
             enif_make_atom(env, "error"),
