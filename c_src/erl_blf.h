@@ -55,11 +55,22 @@
 
 #define _PASSWORD_LEN   128             /* max length, not counting NUL */
 
+#define BCRYPT_MAXSALT 16	/* Precomputation is just so nice */
+
 /* Blowfish context */
 typedef struct BlowfishContext {
     u_int32_t S[4][256];	/* S-Boxes */
     u_int32_t P[BLF_N + 2];	/* Subkeys */
 } blf_ctx;
+
+/* The nif resource type */
+typedef struct bcrypt_param {
+    blf_ctx     state;
+    u_int8_t    key_len, salt_len, logr, minor;
+    u_int32_t   rounds, steps;
+    u_int8_t    csalt[BCRYPT_MAXSALT];
+    u_int8_t    key[1024], salt[1024];
+} bcrypt_param;
 
 /* Raw access to customized Blowfish
  *	blf_key is just:
